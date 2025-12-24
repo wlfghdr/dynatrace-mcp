@@ -68,7 +68,7 @@ export const findTraces = async (
     filters.push(`span.name == "${operationName}"`);
   }
 
-  if (hasError !== undefined && hasError) {
+  if (hasError) {
     filters.push(`span.status == "ERROR"`);
   }
 

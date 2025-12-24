@@ -1547,8 +1547,8 @@ You can now execute new Grail queries (DQL, etc.) again. If this happens more of
       resp += '\n**Next Steps:**\n';
       resp += '1. Investigate slow spans by checking their service health using "find_entity_by_name"\n';
       resp += '2. For error spans, use "list_problems" to check for related issues\n';
-      resp += '3. Use "execute_dql" to query related logs: `fetch logs | filter trace.id == "${traceId}"`\n';
-      resp += `4. View trace in Dynatrace UI: ${dtEnvironment}/ui/apps/dynatrace.distributed.traces/trace/${traceId}\n`;
+      resp += `3. Use "execute_dql" to query related logs: \`fetch logs | filter trace.id == "${traceId}"\`\n`;
+      resp += `4. View trace in Dynatrace UI: ${dtEnvironment}/ui/apps/dynatrace.distributed.traces/trace/${encodeURIComponent(traceId)}\n`;
 
       return resp;
     },
