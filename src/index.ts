@@ -39,6 +39,8 @@ import { handleClientRequestError } from './utils/dynatrace-connection-utils';
 import { configureProxyFromEnvironment } from './utils/proxy-config';
 import { listExceptions } from './capabilities/list-exceptions';
 import { createDynatraceNotebook } from './capabilities/notebooks';
+import { listSlos } from './capabilities/list-slos';
+import { getTraceDetails, findTraces } from './capabilities/trace-details';
 
 const DT_MCP_AUTH_CODE_FLOW_OAUTH_CLIENT_ID = 'dt0s12.local-dt-mcp-server';
 
@@ -1392,6 +1394,244 @@ You can now execute new Grail queries (DQL, etc.) again. If this happens more of
       return data
         ? `Document created successfully: ${dtEnvironment}/ui/apps/dynatrace.notebooks/notebook/${data.id}`
         : 'document creation failed';
+    },
+  );
+
+  // Observability Tools - SLO and Tracing
+
+  tool(
+    'list_slos',
+    'List Service Level Objectives (SLOs)',
+    'List all Service Level Objectives (SLOs) from Dynatrace with their current status, SLI values, targets, and error budgets.',
+    {
+      timeframe: z
+        .string()
+        .optional()
+        .default('7d')
+        .describe(
+          'Timeframe to evaluate SLOs (e.g., "12h", "24h", "7d", "30d"). Default: "7d". Supports hours (h) and days (d).',
+        ),
+      status: z
+        .enum(['WARNING', 'ERROR', 'SUCCESS', 'ALL'])
+        .optional()
+        .default('ALL')
+        .describe(
+          'Filter by SLO status. "WARNING": SLOs at risk, "ERROR": SLOs in error state, "SUCCESS": healthy SLOs, "ALL": all SLOs (default)',
+        ),
+      additionalFilter: z
+        .string()
+        .optional()
+        .describe(
+          'Additional DQL filter for SLOs (e.g., filter by related entity: \'slo.related_entity == "<entity-id>"\')',
+        ),
+      maxSlosToDisplay: z
+        .number()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe('Maximum number of SLOs to display in the response.'),
+    },
+    {
+      readOnlyHint: true,
+    },
+    async ({ timeframe, status, additionalFilter, maxSlosToDisplay }) => {
+      const dtClient = await createAuthenticatedHttpClient(
+        scopesBase.concat('storage:events:read', 'storage:buckets:read'),
+      );
+      const result = await listSlos(dtClient, status, timeframe, additionalFilter, maxSlosToDisplay);
+
+      if (!result || !result.records || result.records.length === 0) {
+        return `No SLOs found with status ${status} in the last ${timeframe}`;
+      }
+
+      let resp = `Found ${result.records.length} SLO(s) with status ${status}! Displaying up to ${maxSlosToDisplay} SLOs:\n\n`;
+
+      result.records.slice(0, maxSlosToDisplay).forEach((slo) => {
+        if (!slo) return;
+
+        const statusEmoji =
+          slo['slo.status'] === 'SUCCESS'
+            ? '✅'
+            : slo['slo.status'] === 'WARNING'
+              ? '⚠️'
+              : slo['slo.status'] === 'ERROR'
+                ? '❌'
+                : '❓';
+
+        resp += `${statusEmoji} **${slo['slo.name']}**\n`;
+        resp += `   Status: ${slo['slo.status']}\n`;
+        resp += `   SLI Value: ${slo['slo.sli_value']}\n`;
+        resp += `   Target: ${slo['slo.target']}\n`;
+        resp += `   Error Budget Remaining: ${slo['slo.error_budget_remaining']}\n`;
+        resp += `   Error Budget Consumed: ${slo['slo.error_budget_consumed']}\n`;
+        if (slo['slo.related_entity']) {
+          resp += `   Related Entity: ${slo['slo.related_entity']}\n`;
+        }
+        resp += '\n';
+      });
+
+      resp += '\n**Next Steps:**\n';
+      resp += '1. Use the "execute_dql" tool to get more details about specific SLOs\n';
+      resp += '2. For SLOs in WARNING or ERROR state, investigate the related entities using "find_entity_by_name"\n';
+      resp += '3. Check for problems or issues affecting the related entities using "list_problems"\n';
+      resp += `4. Visit ${dtEnvironment}/ui/apps/dynatrace.slo for the full SLO dashboard\n`;
+
+      return resp;
+    },
+  );
+
+  tool(
+    'get_trace_details',
+    'Get Trace Details',
+    'Get detailed information about a distributed trace by trace ID, including all spans, their timing, status, and related service information.',
+    {
+      traceId: z.string().describe('The trace ID in W3C format or Dynatrace PurePath ID'),
+      timeframe: z
+        .string()
+        .optional()
+        .default('2h')
+        .describe(
+          'Timeframe to search for the trace (e.g., "1h", "2h", "6h", "24h"). Default: "2h". Supports hours (h) and days (d).',
+        ),
+    },
+    {
+      readOnlyHint: true,
+    },
+    async ({ traceId, timeframe }) => {
+      const dtClient = await createAuthenticatedHttpClient(
+        scopesBase.concat('storage:spans:read', 'storage:buckets:read'),
+      );
+      const result = await getTraceDetails(dtClient, traceId, timeframe);
+
+      if (!result || !result.records || result.records.length === 0) {
+        return `No trace found with ID ${traceId} in the last ${timeframe}. Please verify the trace ID and try with a longer timeframe.`;
+      }
+
+      let resp = `🔍 **Trace Details for ${traceId}**\n\n`;
+      resp += `Found ${result.records.length} span(s) in this trace:\n\n`;
+
+      result.records.forEach((span, index) => {
+        if (!span) return;
+
+        const statusEmoji = span['span.status'] === 'ERROR' ? '❌' : '✅';
+        resp += `${statusEmoji} **Span ${index + 1}: ${span['span.name']}**\n`;
+        resp += `   Service: ${span['service.name']} (${span['dt.entity.service']})\n`;
+        resp += `   Kind: ${span['span.kind']}\n`;
+        resp += `   Status: ${span['span.status']}\n`;
+        resp += `   Duration: ${span['duration']}ms\n`;
+        resp += `   Start: ${span['span.start_time']}\n`;
+
+        if (span['http.method']) {
+          resp += `   HTTP: ${span['http.method']} ${span['http.route'] || span['http.url']}\n`;
+          if (span['http.status_code']) {
+            resp += `   HTTP Status: ${span['http.status_code']}\n`;
+          }
+        }
+
+        if (span['db.system']) {
+          resp += `   Database: ${span['db.system']} - ${span['db.name']}\n`;
+          if (span['db.statement']) {
+            const statement = String(span['db.statement']);
+            resp += `   Query: ${statement.substring(0, 100)}${statement.length > 100 ? '...' : ''}\n`;
+          }
+        }
+
+        if (span['exception.type']) {
+          resp += `   ⚠️ Exception: ${span['exception.type']}\n`;
+          resp += `   Message: ${span['exception.message']}\n`;
+        }
+
+        resp += '\n';
+      });
+
+      resp += '\n**Next Steps:**\n';
+      resp += '1. Investigate slow spans by checking their service health using "find_entity_by_name"\n';
+      resp += '2. For error spans, use "list_problems" to check for related issues\n';
+      resp += '3. Use "execute_dql" to query related logs: `fetch logs | filter trace.id == "${traceId}"`\n';
+      resp += `4. View trace in Dynatrace UI: ${dtEnvironment}/ui/apps/dynatrace.distributed.traces/trace/${traceId}\n`;
+
+      return resp;
+    },
+  );
+
+  tool(
+    'find_traces',
+    'Find Traces',
+    'Search for distributed traces based on various criteria such as service name, duration, error status, or operation name. Returns trace summaries with aggregated information.',
+    {
+      serviceName: z.string().optional().describe('Filter by service name'),
+      serviceEntityId: z
+        .string()
+        .optional()
+        .describe('Filter by Dynatrace service entity ID (e.g., "SERVICE-1234567890ABCDEF")'),
+      minDurationMs: z
+        .number()
+        .optional()
+        .describe('Minimum trace duration in milliseconds (useful for finding slow traces)'),
+      hasError: z.boolean().optional().describe('Set to true to find only traces with errors'),
+      operationName: z.string().optional().describe('Filter by operation/span name (e.g., endpoint name)'),
+      timeframe: z
+        .string()
+        .optional()
+        .default('1h')
+        .describe(
+          'Timeframe to search for traces (e.g., "15m", "1h", "6h", "24h"). Default: "1h". Supports minutes (m), hours (h) and days (d).',
+        ),
+      maxTracesToDisplay: z.number().min(1).max(100).default(20).describe('Maximum number of traces to return.'),
+    },
+    {
+      readOnlyHint: true,
+    },
+    async ({ serviceName, serviceEntityId, minDurationMs, hasError, operationName, timeframe, maxTracesToDisplay }) => {
+      const dtClient = await createAuthenticatedHttpClient(
+        scopesBase.concat('storage:spans:read', 'storage:buckets:read'),
+      );
+      const result = await findTraces(dtClient, {
+        serviceName,
+        serviceEntityId,
+        minDurationMs,
+        hasError,
+        operationName,
+        timeframe,
+        maxTracesToDisplay,
+      });
+
+      if (!result || !result.records || result.records.length === 0) {
+        return `No traces found matching the specified criteria in the last ${timeframe}`;
+      }
+
+      let resp = `🔎 **Found ${result.records.length} trace(s)** matching your criteria:\n\n`;
+
+      result.records.slice(0, maxTracesToDisplay).forEach((trace, index) => {
+        if (!trace) return;
+
+        const errorCount = Number(trace['error_count']) || 0;
+        const hasErrors = errorCount > 0;
+        const statusEmoji = hasErrors ? '❌' : '✅';
+
+        resp += `${statusEmoji} **Trace ${index + 1}: ${trace['root_span_name']}**\n`;
+        resp += `   Trace ID: ${trace['trace.id']}\n`;
+        resp += `   Duration: ${Math.round(Number(trace['trace_duration_ms']) || 0)}ms\n`;
+        resp += `   Spans: ${trace['span_count']}\n`;
+        if (hasErrors) {
+          resp += `   ⚠️ Errors: ${errorCount} span(s) with errors\n`;
+        }
+        resp += `   Services: ${JSON.stringify(trace['services'])}\n`;
+        const startTime = Number(trace['min_start_time']) || 0;
+        resp += `   Start Time: ${new Date(startTime / 1000000).toISOString()}\n`;
+        resp += '\n';
+      });
+
+      resp += '\n**Next Steps:**\n';
+      resp += '1. Use "get_trace_details" with a specific trace.id to see all spans in the trace waterfall\n';
+      resp += '2. For traces with errors, investigate the affected services using "find_entity_by_name"\n';
+      resp += '3. Query related logs using "execute_dql": `fetch logs | filter trace.id == "<trace-id>"`\n';
+      resp += '4. Check for problems related to slow/error traces using "list_problems"\n';
+      if (serviceName) {
+        resp += `5. View traces in Dynatrace UI: ${dtEnvironment}/ui/apps/dynatrace.distributed.traces/traces?query=service.name%3D%22${encodeURIComponent(serviceName)}%22\n`;
+      }
+
+      return resp;
     },
   );
 

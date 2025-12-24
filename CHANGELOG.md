@@ -2,6 +2,9 @@
 
 ## Unreleased Changes
 
+- Added `list_slos` tool to query Service Level Objectives (SLOs) with filtering by status (WARNING, ERROR, SUCCESS, ALL), timeframe, and additional DQL filters
+- Added `get_trace_details` tool to retrieve detailed distributed trace information by trace ID, including all spans with timing, HTTP details, database queries, and exceptions
+- Added `find_traces` tool to search for traces by service name, entity ID, duration, error status, or operation name with aggregated trace summaries
 - Added `timeframe` parameter to `list_vulnerabilities` tool, enabling flexible time ranges (e.g., "12h", "24h", "7d", "30d", "90d"). Default: "30d".
 - Added `timeframe` parameter to `get_kubernetes_events` tool, enabling flexible time ranges (e.g., "12h", "24h", "7d", "30d"). Default: "24h".
 - Added `create_notebook` tool to share findings with colleagues
